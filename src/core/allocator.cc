@@ -1,4 +1,5 @@
 #include "core/allocator.h"
+#include <cstddef>
 #include <utility>
 
 namespace infini
@@ -25,15 +26,39 @@ namespace infini
 
     size_t Allocator::alloc(size_t size)
     {
-        IT_ASSERT(this->ptr == nullptr);
+        // IT_ASSERT(this->ptr == nullptr);
         // pad the size to the multiple of alignment
         size = this->getAlignedSize(size);
 
         // =================================== 作业 ===================================
         // TODO: 设计一个算法来分配内存，返回起始地址偏移量
         // =================================== 作业 ===================================
-
-        return 0;
+        size_t addr = 0;
+        if(free_blocks.empty()) {
+            addr = used;
+            used += size;
+            peak = std::max(peak, used);
+        } else {
+            auto it = free_blocks.begin();
+            size_t max_addr = 0;
+            for(; it != free_blocks.end(); it++) {
+                max_addr = std::max(max_addr, it->first);
+                if(it->second >= size) {
+                    addr = it->first;
+                    if(it->second > size) {
+                        free_blocks.insert(std::make_pair(addr + size, it->second - size));
+                    }
+                    free_blocks.erase(it);
+                    break;
+                }
+            }
+            if(it == free_blocks.end()) {
+                addr = max_addr;
+                used += size;
+                peak = std::max(peak, used);
+            }
+        }
+        return addr;
     }
 
     void Allocator::free(size_t addr, size_t size)
@@ -44,6 +69,12 @@ namespace infini
         // =================================== 作业 ===================================
         // TODO: 设计一个算法来回收内存
         // =================================== 作业 ===================================
+        if(free_blocks.find(addr + size) != free_blocks.end()) {
+            size += free_blocks[addr + size];
+            free_blocks.erase(addr + size);
+        }
+        free_blocks.insert(std::make_pair(addr, size));
+        used -= size;
     }
 
     void *Allocator::getPtr()
