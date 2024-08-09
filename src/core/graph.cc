@@ -1,10 +1,19 @@
 #include "core/graph.h"
 #include "core/blob.h"
+#include "core/common.h"
+#include "core/op_type.h"
 #include "core/ref.h"
 #include "core/runtime.h"
+#include "operators/matmul.h"
+#include "operators/transpose.h"
 #include <algorithm>
+#include <cstddef>
+#include <iostream>
+#include <memory>
 #include <numeric>
 #include <queue>
+#include <type_traits>
+#include <vector>
 
 namespace infini
 {
@@ -45,6 +54,7 @@ namespace infini
         oss << "Graph Tensors:\n";
         for (const auto &tensor : tensors)
             oss << tensor << "\n";
+        // std::cout << "!" << std::endl;
 
         oss << "Graph operators:\n";
         for (const auto &op : ops)
@@ -109,6 +119,95 @@ namespace infini
         // 1. 去除冗余的算子（例如，两个相邻的算子都是 transpose 算子，且做的是相反的操作，可以将其全部删除）
         // 2. 合并算子（例如，矩阵乘算子中含有属性transA、transB，如果其输入存在transpose，且对最后两个维度做交换，就可以将transpose融入到矩阵乘算子的属性中去）
         // =================================== 作业 ===================================
+        for (auto it = ops.begin(); it != ops.end();) {
+            bool optimized = false;
+            auto op = *it;
+            if (op->getOpType() == OpType::Transpose) {
+                const auto& permute1{as<TransposeObj>(op)->getPermute()};
+                for (auto& op_next:op->getSuccessors()) {
+                    if (!op_next) {
+                        continue;
+                    }
+
+                    if (op_next->getOpType() == OpType::Transpose) {
+                        const auto& permute2{as<TransposeObj>(op_next)->getPermute()};
+                        int n = permute1.size();
+                        std::vector<int> inverse_permute(n);
+                        for (int i = 0; i < n; ++i) {
+                            inverse_permute[permute1[i]] = i;
+                        }
+                        bool is_inverse = true;
+                        for (int i = 0; i < n; ++i) {
+                            if (permute2[i] != inverse_permute[i]) {
+                                is_inverse = false;
+                                break;
+                            }
+                        }
+                        if (is_inverse) {
+                            optimized = true;
+                            for (auto& op_next_next: op_next->getSuccessors()) {
+                                if (!op_next_next) {
+                                    continue;
+                                }
+
+                                for (auto out: op->outputs) {
+                                    removeTensor(out);
+                                }
+                                for (auto out: op_next->outputs) {
+                                    removeTensor(out);
+                                }
+
+                                for (size_t i = 0; i < op_next_next->inputs.size(); ++i) {
+                                    if (op_next_next->inputs[i] == op_next->outputs[0]) {
+                                        op_next_next->inputs[i] = op->inputs[0];
+                                    }
+                                }
+                                for (auto& input: op_next_next->inputs) {
+                                    input->removeTarget(op);
+                                    input->addTarget(op_next_next);
+                                }
+                                op_next_next->removePredecessors(op_next);
+                            }
+
+                            removeOperator(op);
+                            removeOperator(op_next);
+                        }
+                    } else if (op_next->getOpType() == OpType::MatMul) {
+                        bool is_trans = true;
+                        int n = permute1.size();
+                        for(int i = 0; i < n - 2; ++i) {
+                            if(permute1[i] != i) {
+                                is_trans = false;
+                            }
+                        }
+                        if(permute1[n - 1] != n - 2) {
+                            is_trans = false;
+                        }
+                        if (is_trans) {
+                            optimized = true;
+                            if (op->outputs[0] == op_next->inputs[0]) {
+                                as<MatmulObj>(op_next)->setTransA(true);
+                                op_next->inputs[0] = op->inputs[0];
+                                op_next->inputs[0]->removeTarget(op);
+                                op_next->inputs[0]->addTarget(op_next);
+                            } else {
+                                as<MatmulObj>(op_next)->setTransB(true);
+                                op_next->inputs[1] = op->inputs[0];
+                                op_next->inputs[1]->removeTarget(op);
+                                op_next->inputs[1]->addTarget(op_next);
+                            }
+                            removeTensor(op->outputs[0]);
+                            op_next->removePredecessors(op);
+
+                            removeOperator(op);
+                        }
+                    }
+                }
+            }
+            if(!optimized) {
+                ++it;
+            }
+        }
     }
 
     Tensor GraphObj::getTensor(int fuid) const
@@ -155,10 +254,16 @@ namespace infini
         // TODO：利用 allocator 给计算图分配内存
         // HINT: 获取分配好的内存指针后，可以调用 tensor 的 setDataBlob 函数给 tensor 绑定内存
         // =================================== 作业 ===================================
+        size_t size = 0;
         for(auto tensor:tensors) {
-            auto size = tensor->size();
-            auto addr = allocator.alloc(size);
-            tensor->setDataBlob(make_ref<BlobObj>(this->runtime, (void*)addr));
+            size += tensor->getBytes();
+        }
+        allocator.alloc(size);
+
+        size_t offset = 0;
+        for(auto tensor:tensors) {
+            tensor->setDataBlob(make_ref<BlobObj>(this->runtime, (void*)((size_t)allocator.getPtr() + offset)));
+            offset += tensor->getBytes();
         }
 
         allocator.info();

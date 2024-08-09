@@ -1,5 +1,6 @@
 #include "utils/operator_utils.h"
 #include "core/runtime.h"
+#include "core/tensor.h"
 
 namespace infini {
 
@@ -9,8 +10,28 @@ Shape infer_broadcast(const Shape &A, const Shape &B) {
     // TODO：对 A 和 B 进行双向广播，返回广播后的形状。
     // REF: https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
     // =================================== 作业 ===================================
-    
-    return {};
+    Shape shape_a = A, shape_b = B;
+    if (shape_a.size() < shape_b.size()) {
+        shape_a.insert(shape_a.begin(), shape_b.size() - shape_a.size(), 1);
+    }
+    if (shape_b.size() < shape_a.size()) {
+        shape_b.insert(shape_b.begin(), shape_a.size() - shape_b.size(), 1);
+    }
+    Shape result;
+    for (size_t i = 0; i < shape_a.size(); i++) {
+        if(shape_a[i] != shape_b[i]) {
+            if(shape_a[i] == 1) {
+                result.push_back(shape_b[i]);
+            } else if(shape_b[i] == 1) {
+                result.push_back(shape_a[i]);
+            } else {
+                IT_ASSERT(false);
+            }
+        } else {
+            result.push_back(shape_a[i]);
+        }
+    }
+    return result;
 }
 
 int get_real_axis(const int &axis, const int &rank) {
